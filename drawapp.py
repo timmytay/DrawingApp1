@@ -1,6 +1,7 @@
 import pygame
 import sys
 import os
+import math
 from datetime import datetime
 
 pygame.init()
@@ -10,6 +11,8 @@ SCREEN_HEIGHT = 600
 BACKGROUND_COLOR = (255, 255, 255)
 DEFAULT_COLOR = (0, 0, 0)
 DEFAULT_THICKNESS = 2
+SELECTION_COLOR = (0, 120, 255)  # Синий цвет для выделения
+SELECTION_THICKNESS = 2
 
 COLORS = {
     'BLACK': (0, 0, 0),
@@ -25,9 +28,9 @@ class DrawingApp:
     def __init__(self):
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("трофим (в8)")
-        pygame.display.set_caption("трофим (в8)")
 
         self.shapes = []
+        self.selected_shape_index = -1
         self.current_tool = 'rectangle'
         self.current_color = COLORS['BLACK']
         self.thickness = DEFAULT_THICKNESS
@@ -35,6 +38,8 @@ class DrawingApp:
         self.start_pos = None
         self.last_pos = None
         self.preview_surface = None
+        self.dragging_selected = False
+        self.drag_offset = (0, 0)
 
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
@@ -54,20 +59,20 @@ class DrawingApp:
         tool_y = 10
 
         ui['tools'].append({
-            'rect': pygame.Rect(0, tool_y, 130, 30),
+            'rect': pygame.Rect(0, tool_y, 70, 30),
             'type': 'rectangle',
-            'text': 'прямоугольник',
+            'text': 'прям',
             'active': True
         })
 
         ui['tools'].append({
-            'rect': pygame.Rect(130, tool_y, 130, 30),
+            'rect': pygame.Rect(70, tool_y, 70, 30),
             'type': 'triangle',
-            'text': 'треугольник',
+            'text': 'треу',
             'active': False
         })
 
-        color_x = 280
+        color_x = 180
         for i, (color_name, color_value) in enumerate(COLORS.items()):
             ui['colors'].append({
                 'rect': pygame.Rect(color_x + i * 40, tool_y, 30, 30),
@@ -77,9 +82,9 @@ class DrawingApp:
             })
 
         ui['thickness_slider'] = {
-            'rect': pygame.Rect(570, tool_y + 10, 100, 6),
+            'rect': pygame.Rect(480, tool_y + 10, 100, 6),
             'handle_rect': pygame.Rect(
-                570 + int((self.thickness - 1) / (10 - 1) * (100 - 8)),
+                480 + int((self.thickness - 1) / (10 - 1) * (100 - 8)),
                 tool_y + 8,
                 8, 14
             ),
@@ -96,6 +101,11 @@ class DrawingApp:
         ui['clear_button'] = {
             'rect': pygame.Rect(SCREEN_WIDTH - 60, tool_y, 60, 30),
             'text': 'клир'
+        }
+
+        ui['deselect_button'] = {
+            'rect': pygame.Rect(SCREEN_WIDTH - 180, tool_y, 60, 30),
+            'text': 'снять'
         }
 
         return ui
@@ -155,9 +165,96 @@ class DrawingApp:
         clear_text_rect = clear_text.get_rect(center=clear_btn['rect'].center)
         self.screen.blit(clear_text, clear_text_rect)
 
-        help_text = self.small_font.render("r - прямоугольник | t - треугольник | c - очистить | s - сохранить", True,
-                                           (80, 80, 80))
+        deselect_btn = self.ui_elements['deselect_button']
+        btn_color = (200, 200, 255) if self.selected_shape_index != -1 else (220, 220, 220)
+        pygame.draw.rect(self.screen, btn_color, deselect_btn['rect'])
+        pygame.draw.rect(self.screen, (100, 100, 100), deselect_btn['rect'], 1)
+        deselect_text = self.font.render(deselect_btn['text'], True, (0, 0, 0))
+        deselect_text_rect = deselect_text.get_rect(center=deselect_btn['rect'].center)
+        self.screen.blit(deselect_text, deselect_text_rect)
+
+        help_text = self.small_font.render("r - прямоугольник | t - треугольник | c - очистить | s - сохранить | del - удалить выбранное", True, (80, 80, 80))
         self.screen.blit(help_text, (10, SCREEN_HEIGHT - 25))
+
+        if self.selected_shape_index != -1 and self.selected_shape_index < len(self.shapes):
+            selected_info = self.small_font.render(f"Выбрано: фигура {self.selected_shape_index + 1}", True, SELECTION_COLOR)
+            self.screen.blit(selected_info, (10, SCREEN_HEIGHT - 45))
+
+    def point_in_rect(self, point, rect_start, rect_end):
+        """проверка, находится ли точка внутри прямоугольника"""
+        x, y = point
+        x1, y1 = rect_start
+        x2, y2 = rect_end
+        
+        min_x = min(x1, x2)
+        max_x = max(x1, x2)
+        min_y = min(y1, y2)
+        max_y = max(y1, y2)
+        
+        tolerance = 5
+        return (min_x - tolerance <= x <= max_x + tolerance and 
+                min_y - tolerance <= y <= max_y + tolerance)
+
+    def point_in_triangle(self, point, p1, p2, p3):
+        """проверка, находится ли точка внутри треугольника"""
+        def sign(p1, p2, p3):
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+        
+        d1 = sign(point, p1, p2)
+        d2 = sign(point, p2, p3)
+        d3 = sign(point, p3, p1)
+        
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+        
+        return not (has_neg and has_pos)
+
+    def get_triangle_points(self, start, end):
+        """получение точек треугольника"""
+        x1, y1 = start
+        x2, y2 = end
+        
+        base_y = max(y1, y2)
+        top_y = min(y1, y2)
+        mid_x = (x1 + x2) // 2
+        
+        return [(x1, base_y), (x2, base_y), (mid_x, top_y)]
+
+    def find_shape_at_point(self, point):
+        """поиск фигуры по координатам точки"""
+        for i in range(len(self.shapes) - 1, -1, -1):
+            shape = self.shapes[i]
+            
+            if shape['type'] == 'rectangle':
+                if self.point_in_rect(point, shape['start'], shape['end']):
+                    return i
+            elif shape['type'] == 'triangle':
+                points = self.get_triangle_points(shape['start'], shape['end'])
+                if self.point_in_triangle(point, points[0], points[1], points[2]):
+                    return i
+        
+        return -1
+
+    def draw_selection_highlight(self, shape):
+        """отрисовка выделения вокруг фигуры"""
+        if shape['type'] == 'rectangle':
+            x1, y1 = shape['start']
+            x2, y2 = shape['end']
+            
+            rect = pygame.Rect(min(x1, x2), min(y1, y2),
+                               abs(x1 - x2), abs(y1 - y2))
+            pygame.draw.rect(self.screen, SELECTION_COLOR, rect, SELECTION_THICKNESS)
+            
+            for x, y in [(rect.left, rect.top), (rect.right, rect.top),
+                         (rect.left, rect.bottom), (rect.right, rect.bottom)]:
+                pygame.draw.circle(self.screen, SELECTION_COLOR, (x, y), 4)
+                
+        elif shape['type'] == 'triangle':
+            points = self.get_triangle_points(shape['start'], shape['end'])
+            pygame.draw.polygon(self.screen, SELECTION_COLOR, points, SELECTION_THICKNESS)
+            
+            for point in points:
+                pygame.draw.circle(self.screen, SELECTION_COLOR, point, 4)
 
     def handle_events(self):
         """обработка событий"""
@@ -174,32 +271,66 @@ class DrawingApp:
                     self.update_ui_active_states()
                 elif event.key == pygame.K_c:
                     self.shapes.clear()
+                    self.selected_shape_index = -1
                 elif event.key == pygame.K_s:
                     self.save_image()
                 elif event.key == pygame.K_ESCAPE:
                     self.drawing = False
                     self.start_pos = None
+                    self.dragging_selected = False
+                elif event.key == pygame.K_DELETE:
+                    if self.selected_shape_index != -1 and self.selected_shape_index < len(self.shapes):
+                        del self.shapes[self.selected_shape_index]
+                        self.selected_shape_index = -1
 
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     if not self.handle_ui_click(event.pos):
                         if event.pos[1] > 50:
-                            self.drawing = True
-                            self.start_pos = event.pos
-                            self.last_pos = event.pos
+                            clicked_shape_index = self.find_shape_at_point(event.pos)
+                            
+                            if clicked_shape_index != -1:
+                                if clicked_shape_index == self.selected_shape_index:
+                                    self.dragging_selected = True
+                                    shape = self.shapes[clicked_shape_index]
+                                    self.drag_offset = (
+                                        shape['start'][0] - event.pos[0],
+                                        shape['start'][1] - event.pos[1]
+                                    )
+                                else:
+                                    self.selected_shape_index = clicked_shape_index
+                                    self.dragging_selected = False
+                            else:
+                                self.selected_shape_index = -1
+                                self.drawing = True
+                                self.start_pos = event.pos
+                                self.last_pos = event.pos
 
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1 and self.drawing:
-                    if self.start_pos and self.start_pos != event.pos:
+                if event.button == 1:
+                    if self.drawing and self.start_pos and self.start_pos != event.pos:
                         end_pos = event.pos
                         if end_pos[1] > 50:
                             self.add_shape(self.start_pos, end_pos)
                     self.drawing = False
+                    self.dragging_selected = False
                     self.start_pos = None
                     self.preview_surface.fill((0, 0, 0, 0))
 
             elif event.type == pygame.MOUSEMOTION:
-                if self.drawing:
+                if self.dragging_selected and self.selected_shape_index != -1:
+                    shape = self.shapes[self.selected_shape_index]
+                    dx = event.pos[0] + self.drag_offset[0] - shape['start'][0]
+                    dy = event.pos[1] + self.drag_offset[1] - shape['start'][1]
+                    
+                    shape['start'] = (shape['start'][0] + dx, shape['start'][1] + dy)
+                    shape['end'] = (shape['end'][0] + dx, shape['end'][1] + dy)
+                    
+                    self.drag_offset = (
+                        shape['start'][0] - event.pos[0],
+                        shape['start'][1] - event.pos[1]
+                    )
+                elif self.drawing:
                     self.last_pos = event.pos
                     self.update_preview()
 
@@ -241,6 +372,11 @@ class DrawingApp:
 
         if self.ui_elements['clear_button']['rect'].collidepoint(pos):
             self.shapes.clear()
+            self.selected_shape_index = -1
+            return True
+
+        if self.ui_elements['deselect_button']['rect'].collidepoint(pos):
+            self.selected_shape_index = -1
             return True
 
         return False
@@ -260,6 +396,7 @@ class DrawingApp:
             'thickness': self.thickness
         }
         self.shapes.append(shape)
+        self.selected_shape_index = len(self.shapes) - 1  # Автоматически выделяем новую фигуру
 
     def update_preview(self):
         """предпросмотр фигуры"""
@@ -299,13 +436,17 @@ class DrawingApp:
 
     def draw_shapes(self):
         """отрисовка всех фигур"""
-        for shape in self.shapes:
+        for i, shape in enumerate(self.shapes):
             self.draw_shape(self.screen,
                             shape['type'],
                             shape['start'],
                             shape['end'],
                             shape['color'],
                             shape['thickness'])
+            
+            # Если фигура выделена, рисуем обводку выделения
+            if i == self.selected_shape_index:
+                self.draw_selection_highlight(shape)
 
     def save_image(self):
         """сохранение изображения"""
@@ -321,7 +462,7 @@ class DrawingApp:
 
         try:
             drawing_surface = self.screen.subsurface(
-                (0, 50, SCREEN_WIDTH, SCREEN_HEIGHT - 50 - 30)  # Вычитаем 30 пикселей для инструкции внизу
+                (0, 50, SCREEN_WIDTH, SCREEN_HEIGHT - 50 - 30)
             )
             pygame.image.save(drawing_surface, filename)
             print(f"изображение сохранено: {filename}")
@@ -357,11 +498,9 @@ class DrawingApp:
         pygame.quit()
         sys.exit()
 
-
 def main():
     app = DrawingApp()
     app.run()
-
 
 if __name__ == "__main__":
     main()
