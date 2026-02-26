@@ -6,14 +6,15 @@ from datetime import datetime
 
 pygame.init()
 
-SCREEN_WIDTH = 800
+SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 600
 BACKGROUND_COLOR = (255, 255, 255)
 DEFAULT_COLOR = (0, 0, 0)
 DEFAULT_THICKNESS = 2
-SELECTION_COLOR = (0, 120, 255)  # Синий цвет для выделения
+SELECTION_COLOR = (0, 120, 255)
 SELECTION_THICKNESS = 2
-MULTI_SELECTION_COLOR = (255, 165, 0)  # Оранжевый для мультивыделения
+MULTI_SELECTION_COLOR = (255, 165, 0)
+CENTER_COLOR = (255, 0, 0)
 
 COLORS = {
     'BLACK': (0, 0, 0),
@@ -28,10 +29,10 @@ COLORS = {
 class DrawingApp:
     def __init__(self):
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("трофим (в8) - мультивыделение")
+        pygame.display.set_caption("трофим (в8) - мультивыделение с центром")
 
         self.shapes = []
-        self.selected_shape_indices = set()  # Множество индексов выбранных фигур
+        self.selected_shape_indices = set()  # множество индексов выбранных фигур
         self.current_tool = 'rectangle'
         self.current_color = COLORS['BLACK']
         self.thickness = DEFAULT_THICKNESS
@@ -39,11 +40,12 @@ class DrawingApp:
         self.start_pos = None
         self.last_pos = None
         self.preview_surface = None
-        self.dragging_selected = False  # Флаг перетаскивания выбранных фигур
-        self.drag_offsets = {}  # Словарь смещений для каждой фигуры
-        self.selection_rect = None  # Прямоугольник выделения
-        self.selecting = False  # Режим выделения прямоугольником
-        self.ctrl_pressed = False  # Флаг нажатия Ctrl
+        self.dragging_selected = False  # флаг перетаскивания выбранных фигур
+        self.drag_offsets = {}  # словарь смещений для каждой фигуры
+        self.selection_rect = None  # прямоугольник выделения
+        self.selecting = False  # режим выделения прямоугольником
+        self.ctrl_pressed = False  # флаг нажатия Ctrl
+        self.show_center = True  # флаг отображения центра
 
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
@@ -116,6 +118,12 @@ class DrawingApp:
             'rect': pygame.Rect(SCREEN_WIDTH - 240, tool_y, 60, 30),
             'text': 'все'
         }
+        
+        ui['center_button'] = {
+            'rect': pygame.Rect(SCREEN_WIDTH - 300, tool_y, 60, 30),
+            'text': 'центр',
+            'active': self.show_center
+        }
 
         return ui
 
@@ -130,6 +138,8 @@ class DrawingApp:
         slider = self.ui_elements['thickness_slider']
         slider['value'] = self.thickness
         slider['handle_rect'].x = slider['rect'].x + (self.thickness - slider['min']) * 10
+        
+        self.ui_elements['center_button']['active'] = self.show_center
 
     def draw_ui(self):
         """отрисовка интерфейса для юзера"""
@@ -188,10 +198,18 @@ class DrawingApp:
         select_all_text = self.font.render(select_all_btn['text'], True, (0, 0, 0))
         select_all_text_rect = select_all_text.get_rect(center=select_all_btn['rect'].center)
         self.screen.blit(select_all_text, select_all_text_rect)
+        
+        center_btn = self.ui_elements['center_button']
+        btn_color = (200, 200, 200) if center_btn['active'] else (220, 220, 220)
+        pygame.draw.rect(self.screen, btn_color, center_btn['rect'])
+        pygame.draw.rect(self.screen, (100, 100, 100), center_btn['rect'], 1)
+        center_text = self.font.render(center_btn['text'], True, (0, 0, 0))
+        center_text_rect = center_text.get_rect(center=center_btn['rect'].center)
+        self.screen.blit(center_text, center_text_rect)
 
         help_text = self.small_font.render(
             "r - прямоугольник | t - треугольник | c - очистить | s - сохранить | "
-            "del - удалить выбранные | ctrl+клик - добавить | a - все",
+            "del - удалить выбранные | ctrl+клик - добавить | a - все | центр - пробел",
             True, (80, 80, 80))
         self.screen.blit(help_text, (10, SCREEN_HEIGHT - 25))
 
@@ -201,6 +219,69 @@ class DrawingApp:
             selected_info = self.small_font.render(
                 f"Выбрано фигур: {count}", True, SELECTION_COLOR)
             self.screen.blit(selected_info, (10, SCREEN_HEIGHT - 45))
+
+    def calculate_center(self):
+        """вычисление центра выделенных фигур"""
+        if len(self.selected_shape_indices) == 0:
+            return None
+        
+        total_x = 0
+        total_y = 0
+        point_count = 0
+        
+        for idx in self.selected_shape_indices:
+            if idx < len(self.shapes):
+                shape = self.shapes[idx]
+                
+                if shape['type'] == 'rectangle':
+                    x1, y1 = shape['start']
+                    x2, y2 = shape['end']
+                    # добавляем все 4 угла прямоугольника
+                    points = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
+                    
+                elif shape['type'] == 'triangle':
+                    points = self.get_triangle_points(shape['start'], shape['end'])
+                
+                for point in points:
+                    total_x += point[0]
+                    total_y += point[1]
+                    point_count += 1
+        
+        if point_count > 0:
+            center_x = total_x // point_count
+            center_y = total_y // point_count
+            return (center_x, center_y)
+        
+        return None
+
+    def draw_center(self, center_pos):
+        """отрисовка центра выделенных фигур"""
+        if not center_pos or not self.show_center:
+            return
+        
+        x, y = center_pos
+        
+        # перекрестие
+        cross_size = 10
+        pygame.draw.line(self.screen, CENTER_COLOR, 
+                        (x - cross_size, y), (x + cross_size, y), 2)
+        pygame.draw.line(self.screen, CENTER_COLOR, 
+                        (x, y - cross_size), (x, y + cross_size), 2)
+        
+        # окружность вокруг центра
+        pygame.draw.circle(self.screen, CENTER_COLOR, (x, y), 15, 2)
+        
+        # координаты центра
+        coord_text = self.small_font.render(
+            f"({x}, {y})", True, CENTER_COLOR)
+        text_rect = coord_text.get_rect(center=(x, y - 25))
+        
+        # фон для текста
+        pygame.draw.rect(self.screen, (255, 255, 255, 200), 
+                        text_rect.inflate(10, 5))
+        pygame.draw.rect(self.screen, CENTER_COLOR, 
+                        text_rect.inflate(10, 5), 1)
+        self.screen.blit(coord_text, text_rect)
 
     def point_in_rect(self, point, rect_start, rect_end):
         """проверка, находится ли точка внутри прямоугольника"""
@@ -350,6 +431,10 @@ class DrawingApp:
                     self.selected_shape_indices = set(range(len(self.shapes)))
                 elif event.key == pygame.K_LCTRL or event.key == pygame.K_RCTRL:
                     self.ctrl_pressed = True
+                elif event.key == pygame.K_SPACE:
+                    # Переключение отображения центра
+                    self.show_center = not self.show_center
+                    self.update_ui_active_states()
 
             elif event.type == pygame.KEYUP:
                 if event.key == pygame.K_LCTRL or event.key == pygame.K_RCTRL:
@@ -359,21 +444,21 @@ class DrawingApp:
                 if event.button == 1:  # левая кнопка мыши
                     if not self.handle_ui_click(event.pos):
                         if event.pos[1] > 50:
-                            # Проверяем, кликнули ли на фигуру
+                            # проверяем, кликнули ли на фигуру
                             clicked_shape_index = self.find_shape_at_point(event.pos)
                             
                             if clicked_shape_index != -1:
-                                # Кликнули на фигуру
+                                # кликнули на фигуру
                                 if self.ctrl_pressed:
-                                    # Ctrl + клик: добавляем/убираем из выделения
+                                    # добавляем/убираем из выделения
                                     if clicked_shape_index in self.selected_shape_indices:
                                         self.selected_shape_indices.remove(clicked_shape_index)
                                     else:
                                         self.selected_shape_indices.add(clicked_shape_index)
                                 else:
-                                    # Обычный клик: проверяем, кликнули ли на уже выделенную фигуру
+                                    # обычный клик: проверяем, кликнули ли на уже выделенную фигуру
                                     if clicked_shape_index in self.selected_shape_indices:
-                                        # Начинаем перетаскивание всех выбранных фигур
+                                        # начинаем перетаскивание всех выбранных фигур
                                         self.dragging_selected = True
                                         self.drag_offsets.clear()
                                         for idx in self.selected_shape_indices:
@@ -383,22 +468,22 @@ class DrawingApp:
                                                 shape['start'][1] - event.pos[1]
                                             )
                                     else:
-                                        # Кликнули на другую фигуру - выделяем только её
+                                        # кликнули на другую фигуру - выделяем только её
                                         self.selected_shape_indices = {clicked_shape_index}
                                         self.dragging_selected = False
                             else:
-                                # Кликнули в пустое место
+                                # кликнули в пустое место
                                 if not self.ctrl_pressed:
-                                    # Если не зажат Ctrl - снимаем выделение
+                                    # если не зажат Ctrl - снимаем выделение
                                     self.selected_shape_indices.clear()
                                 
-                                # Начинаем рисование или выделение прямоугольником
+                                # начинаем рисование или выделение прямоугольником
                                 self.start_pos = event.pos
                                 if self.ctrl_pressed:
-                                    # Режим выделения прямоугольником
+                                    # режим выделения прямоугольником
                                     self.selecting = True
                                 else:
-                                    # Режим рисования
+                                    # режим рисования
                                     self.drawing = True
                                 
                                 self.last_pos = event.pos
@@ -406,7 +491,7 @@ class DrawingApp:
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     if self.selecting and self.start_pos and self.start_pos != event.pos:
-                        # Завершаем выделение прямоугольником
+                        # завершаем выделение прямоугольником
                         rect = (min(self.start_pos[0], event.pos[0]),
                                min(self.start_pos[1], event.pos[1]),
                                abs(self.start_pos[0] - event.pos[0]),
@@ -414,10 +499,10 @@ class DrawingApp:
                         
                         found_indices = self.find_shapes_in_rect(rect)
                         if self.ctrl_pressed:
-                            # Добавляем найденные фигуры к выделению
+                            # добавляем найденные фигуры к выделению
                             self.selected_shape_indices.update(found_indices)
                         else:
-                            # Заменяем выделение найденными фигурами
+                            # заменяем выделение найденными фигурами
                             self.selected_shape_indices = set(found_indices)
                     
                     elif self.drawing and self.start_pos and self.start_pos != event.pos:
@@ -435,7 +520,7 @@ class DrawingApp:
 
             elif event.type == pygame.MOUSEMOTION:
                 if self.dragging_selected and self.selected_shape_indices:
-                    # Перетаскивание всех выбранных фигур
+                    # перетаскивание всех выбранных фигур
                     for idx in self.selected_shape_indices:
                         if idx in self.drag_offsets and idx < len(self.shapes):
                             shape = self.shapes[idx]
@@ -455,7 +540,7 @@ class DrawingApp:
                     if self.drawing:
                         self.update_preview()
                     elif self.selecting:
-                        # Обновляем прямоугольник выделения
+                        # обновляем прямоугольник выделения
                         self.selection_rect = (
                             min(self.start_pos[0], self.last_pos[0]),
                             min(self.start_pos[1], self.last_pos[1]),
@@ -511,6 +596,11 @@ class DrawingApp:
         if self.ui_elements['select_all_button']['rect'].collidepoint(pos):
             self.selected_shape_indices = set(range(len(self.shapes)))
             return True
+            
+        if self.ui_elements['center_button']['rect'].collidepoint(pos):
+            self.show_center = not self.show_center
+            self.update_ui_active_states()
+            return True
 
         return False
 
@@ -531,10 +621,10 @@ class DrawingApp:
         self.shapes.append(shape)
         
         if not self.ctrl_pressed:
-            # Если не зажат Ctrl, выделяем только новую фигуру
+            # если не зажат Ctrl, выделяем только новую фигуру
             self.selected_shape_indices = {len(self.shapes) - 1}
         else:
-            # Если зажат Ctrl, добавляем новую фигуру к выделению
+            # если зажат Ctrl, добавляем новую фигуру к выделению
             self.selected_shape_indices.add(len(self.shapes) - 1)
 
     def update_preview(self):
@@ -583,12 +673,12 @@ class DrawingApp:
                             shape['color'],
                             shape['thickness'])
             
-            # Рисуем обводку выделения для выбранных фигур
+            # рисуем обводку выделения для выбранных фигур
             if i in self.selected_shape_indices:
                 is_multi = len(self.selected_shape_indices) > 1
                 self.draw_selection_highlight(shape, is_multi)
 
-        # Рисуем прямоугольник выделения
+        # прямоугольник выделения
         if self.selecting and self.selection_rect:
             rect_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             rect_surface.fill((0, 0, 0, 0))
@@ -597,6 +687,11 @@ class DrawingApp:
             pygame.draw.rect(rect_surface, (*SELECTION_COLOR, 32), 
                            self.selection_rect, 0)
             self.screen.blit(rect_surface, (0, 0))
+        
+        # рисуем центр выделенных фигур
+        if self.selected_shape_indices:
+            center = self.calculate_center()
+            self.draw_center(center)
 
     def save_image(self):
         """сохранение изображения"""
